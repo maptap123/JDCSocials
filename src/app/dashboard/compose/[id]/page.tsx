@@ -149,7 +149,8 @@ export default function EditPostPage() {
       .update({
         content,
         platforms: selectedPlatforms,
-        status,
+        // "Update & Publish" saves as draft first, then publishes via Zapier below.
+        status: status === "published" ? "draft" : status,
         scheduled_at: scheduledAt ? new Date(scheduledAt).toISOString() : null,
         media_urls: uploadedFiles.map((f) => f.url),
         error_message: null,
@@ -158,10 +159,33 @@ export default function EditPostPage() {
 
     if (error) {
       toast({ title: "Failed to update", description: error.message, variant: "destructive" });
+      setSaving(false);
+      return;
+    }
+
+    if (status === "published") {
+      const res = await fetch("/api/posts/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ postId: id }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (res.ok && result.anySuccess) {
+        toast({
+          title: "Post published!",
+          description: result.errors?.length ? `Some platforms failed: ${result.errors.join("; ")}` : undefined,
+        });
+      } else {
+        toast({
+          title: "Publishing failed",
+          description: result.error ?? result.errors?.join("; ") ?? "Check the Zapier connection in Settings.",
+          variant: "destructive",
+        });
+      }
     } else {
       toast({ title: status === "scheduled" ? "Post rescheduled!" : "Post updated!" });
-      router.push("/dashboard");
     }
+    router.push("/dashboard");
     setSaving(false);
   }
 

@@ -1,99 +1,146 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { PlatformIcon } from "@/components/platform-icon";
 import { PLATFORM_CONFIG } from "@/lib/platforms";
-import { CheckCircle2, Download, LogIn, Globe, Info } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  ExternalLink,
+  Info,
+  KeyRound,
+  RefreshCw,
+  Rocket,
+  Wrench,
+  XCircle,
+  Zap,
+} from "lucide-react";
 import type { Platform } from "@/types/database";
 
 const PLATFORMS: Platform[] = ["facebook", "instagram", "linkedin", "houzz"];
+const ZAPIER_PLATFORMS: Exclude<Platform, "houzz">[] = ["facebook", "instagram", "linkedin"];
 
-const PLATFORM_NOTES: Record<Platform, { mode: "auto" | "clipboard"; note: string }> = {
-  facebook:  { mode: "auto",      note: "Posts automatically via your logged-in session" },
-  instagram: { mode: "clipboard", note: "Caption is copied to clipboard — you paste it after selecting your image" },
-  linkedin:  { mode: "auto",      note: "Posts automatically via your logged-in session" },
-  houzz:     { mode: "clipboard", note: "Content is copied to clipboard — paste it into Houzz manually" },
+const PLATFORM_NOTES: Record<Platform, { mode: "auto" | "manual"; note: string }> = {
+  facebook:  { mode: "auto",   note: "Posts to your Facebook Page automatically via Zapier" },
+  instagram: { mode: "auto",   note: "Publishes photo posts via Zapier — requires an image" },
+  linkedin:  { mode: "auto",   note: "Posts to your LinkedIn page automatically via Zapier" },
+  houzz:     { mode: "manual", note: "No public API — compose here, then post manually on Houzz" },
 };
 
 const STEPS = [
   {
-    icon: Download,
-    title: "Install the Chrome Extension",
+    icon: Zap,
+    title: "Create a Zapier MCP Server",
     body: (
       <>
-        <p className="text-sm text-gray-600 mb-3">
-          The extension lives in the <code className="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">extension/</code> folder of this project. Load it in Chrome:
+        <p className="text-sm text-gray-600 mb-2">
+          Go to{" "}
+          <a href="https://mcp.zapier.com" target="_blank" rel="noreferrer" className="text-indigo-600 underline inline-flex items-center gap-1">
+            mcp.zapier.com <ExternalLink className="h-3 w-3" />
+          </a>{" "}
+          and sign in with your Zapier account.
         </p>
         <ol className="list-decimal list-inside space-y-1 text-sm text-gray-600">
-          <li>Open Chrome and go to <code className="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">chrome://extensions</code></li>
-          <li>Enable <strong>Developer mode</strong> (top-right toggle)</li>
-          <li>Click <strong>Load unpacked</strong></li>
-          <li>Select the <code className="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">extension/</code> folder from the project</li>
-          <li>The <strong>JDC Socials Publisher</strong> icon appears in your toolbar</li>
+          <li>Click <strong>+ New MCP Server</strong></li>
+          <li>Choose <strong>Other</strong> as the client</li>
+          <li>Name it (e.g. <em>JDC Socials</em>)</li>
         </ol>
       </>
     ),
   },
   {
-    icon: LogIn,
-    title: "Sign in to the Extension",
+    icon: Wrench,
+    title: "Add Posting Tools",
     body: (
-      <p className="text-sm text-gray-600">
-        Click the extension icon in Chrome and sign in with your <strong>JDC Socials</strong> email and password — the same credentials you use to log in here. The extension syncs with your scheduled posts automatically.
-      </p>
+      <>
+        <p className="text-sm text-gray-600 mb-2">
+          In your server&apos;s <strong>Tools</strong> tab, add these actions and connect each account when prompted:
+        </p>
+        <ul className="list-disc list-inside space-y-1 text-sm text-gray-600">
+          <li><strong>Facebook Pages</strong> → Create Page Post <em>and</em> Create Page Photo</li>
+          <li><strong>Instagram for Business</strong> → Publish Photo</li>
+          <li><strong>LinkedIn</strong> → Create Company Update (or Create Share Update for a personal profile)</li>
+        </ul>
+        <p className="text-sm text-gray-600 mt-2">
+          When configuring each tool, <strong>select your business Page</strong> in the page/account field and leave the
+          text fields set to <strong>&quot;Have AI guess values&quot;</strong>.
+        </p>
+      </>
     ),
   },
   {
-    icon: Globe,
-    title: "Stay Logged in to Each Platform",
+    icon: KeyRound,
+    title: "Copy the Server URL into the App",
     body: (
-      <p className="text-sm text-gray-600">
-        The extension posts using your existing browser sessions. Make sure you are already logged in to <strong>Facebook</strong>, <strong>Instagram</strong>, <strong>LinkedIn</strong>, and <strong>Houzz</strong> in the same Chrome profile. No developer accounts needed.
-      </p>
+      <>
+        <p className="text-sm text-gray-600 mb-2">
+          In the server&apos;s <strong>Connect</strong> tab, copy the <strong>Server URL</strong> (Streamable HTTP). Then:
+        </p>
+        <ol className="list-decimal list-inside space-y-1 text-sm text-gray-600">
+          <li>In Vercel: <strong>Project → Settings → Environment Variables</strong>, add <code className="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">ZAPIER_MCP_URL</code> with that URL</li>
+          <li>For local dev, add the same line to <code className="bg-gray-100 px-1 py-0.5 rounded text-xs font-mono">.env.local</code></li>
+          <li>Redeploy the app</li>
+        </ol>
+        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5 mt-2">
+          Treat the URL like a password — anyone who has it can post as you.
+        </p>
+      </>
     ),
   },
   {
-    icon: CheckCircle2,
-    title: "Schedule Posts from the Dashboard",
+    icon: Rocket,
+    title: "Verify & Go",
     body: (
       <p className="text-sm text-gray-600">
-        Create and schedule posts from the <strong>Compose</strong> tab. The extension checks every minute and auto-publishes anything that is due. You can also trigger an immediate publish by clicking <strong>Check &amp; Publish Now</strong> in the extension popup.
+        Refresh the connection status above — it should turn green with all three platforms covered. Then schedule a
+        test post a couple of minutes out from the <strong>Compose</strong> tab and watch it publish.
       </p>
     ),
   },
 ];
 
+interface ZapierStatus {
+  configured: boolean;
+  connected: boolean;
+  error?: string;
+  tools: string[];
+  coverage: Record<Exclude<Platform, "houzz">, string | null>;
+}
+
 export default function SettingsPage() {
   const [user, setUser] = useState<{ email?: string } | null>(null);
-  const [facebookPageUrl, setFacebookPageUrl] = useState("");
-  const [linkedinCompanyUrl, setLinkedinCompanyUrl] = useState("");
-  const [savingPages, setSavingPages] = useState(false);
+  const [status, setStatus] = useState<ZapierStatus | null>(null);
+  const [checking, setChecking] = useState(true);
   const supabase = createClient();
+
+  const checkStatus = useCallback(async () => {
+    setChecking(true);
+    try {
+      const res = await fetch("/api/zapier/status");
+      if (!res.ok) throw new Error(`Status check failed (${res.status})`);
+      setStatus((await res.json()) as ZapierStatus);
+    } catch (err) {
+      setStatus({
+        configured: true,
+        connected: false,
+        error: err instanceof Error ? err.message : "Status check failed",
+        tools: [],
+        coverage: { facebook: null, instagram: null, linkedin: null },
+      });
+    }
+    setChecking(false);
+  }, []);
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
-      if (data.user) {
-        setUser({ email: data.user.email ?? undefined });
-        supabase
-          .from("social_settings")
-          .select("facebook_page_url, linkedin_company_url")
-          .eq("user_id", data.user.id)
-          .maybeSingle()
-          .then(({ data: settings }) => {
-            if (settings) {
-              setFacebookPageUrl(settings.facebook_page_url ?? "");
-              setLinkedinCompanyUrl(settings.linkedin_company_url ?? "");
-            }
-          });
-      }
+      if (data.user) setUser({ email: data.user.email ?? undefined });
     });
-  }, [supabase]);
+    checkStatus();
+  }, [supabase, checkStatus]);
 
   async function handleSignOut() {
     await supabase.auth.signOut();
@@ -101,28 +148,14 @@ export default function SettingsPage() {
     window.location.href = "/login";
   }
 
-  async function handleSavePages() {
-    setSavingPages(true);
-    const { data: { user: u } } = await supabase.auth.getUser();
-    if (!u) return;
-    const { error } = await supabase.from("social_settings").upsert({
-      user_id: u.id,
-      facebook_page_url: facebookPageUrl.trim() || null,
-      linkedin_company_url: linkedinCompanyUrl.trim() || null,
-    });
-    setSavingPages(false);
-    if (error) {
-      toast({ title: "Failed to save", description: error.message, variant: "destructive" });
-    } else {
-      toast({ title: "Page URLs saved" });
-    }
-  }
+  const allCovered =
+    status?.connected && ZAPIER_PLATFORMS.every((p) => status.coverage[p]);
 
   return (
     <div className="p-8 max-w-3xl mx-auto">
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
-        <p className="text-sm text-gray-500 mt-1">Manage your account and Chrome extension</p>
+        <p className="text-sm text-gray-500 mt-1">Manage your account and Zapier connection</p>
       </div>
 
       {/* Account card */}
@@ -141,56 +174,82 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* Target pages */}
-      <h2 className="text-base font-semibold text-gray-900 mb-4">Target Pages</h2>
+      {/* Zapier connection status */}
+      <h2 className="text-base font-semibold text-gray-900 mb-4">Zapier Connection</h2>
       <Card className="mb-8">
-        <CardHeader>
-          <CardDescription>
-            Tell the extension which business page to post to instead of your personal profile.
-            Paste the full URL of your Facebook Page or LinkedIn Company page below.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-5">
-          <div className="space-y-1.5">
-            <Label htmlFor="fb-page" className="flex items-center gap-2">
-              <PlatformIcon platform="facebook" className="h-4 w-4 text-blue-600" />
-              Facebook Page URL
-            </Label>
-            <Input
-              id="fb-page"
-              placeholder="https://www.facebook.com/YourBusinessPage"
-              value={facebookPageUrl}
-              onChange={(e) => setFacebookPageUrl(e.target.value)}
-            />
-            <p className="text-xs text-gray-500">
-              The extension will open this page and post from the page composer — not your personal feed.
-            </p>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <div className="flex items-center gap-2">
+            <Zap className="h-4 w-4 text-orange-500" />
+            <CardTitle className="text-base">Posting Engine</CardTitle>
           </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="li-company" className="flex items-center gap-2">
-              <PlatformIcon platform="linkedin" className="h-4 w-4 text-blue-700" />
-              LinkedIn Company Page URL
-            </Label>
-            <Input
-              id="li-company"
-              placeholder="https://www.linkedin.com/company/your-company"
-              value={linkedinCompanyUrl}
-              onChange={(e) => setLinkedinCompanyUrl(e.target.value)}
-            />
-            <p className="text-xs text-gray-500">
-              The extension will open your company page admin view and post as the company.
-            </p>
-          </div>
-
-          <Button onClick={handleSavePages} disabled={savingPages} size="sm">
-            {savingPages ? "Saving…" : "Save Page URLs"}
+          <Button variant="outline" size="sm" onClick={checkStatus} disabled={checking}>
+            <RefreshCw className={`h-3.5 w-3.5 ${checking ? "animate-spin" : ""}`} />
+            {checking ? "Checking…" : "Refresh"}
           </Button>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {checking && !status ? (
+            <p className="text-sm text-gray-500">Checking your Zapier connection…</p>
+          ) : !status?.configured ? (
+            <div className="flex gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-amber-800">Not configured yet</p>
+                <p className="text-sm text-amber-700 mt-0.5">
+                  Add your Zapier MCP server URL as the <code className="bg-amber-100 px-1 py-0.5 rounded text-xs font-mono">ZAPIER_MCP_URL</code>{" "}
+                  environment variable, then redeploy. Follow the steps below.
+                </p>
+              </div>
+            </div>
+          ) : !status.connected ? (
+            <div className="flex gap-3 rounded-lg border border-red-200 bg-red-50 p-3">
+              <XCircle className="h-4 w-4 text-red-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-red-800">Can&apos;t reach your Zapier MCP server</p>
+                <p className="text-sm text-red-700 mt-0.5 break-all">{status.error}</p>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="flex gap-3 rounded-lg border border-green-200 bg-green-50 p-3">
+                <CheckCircle2 className="h-4 w-4 text-green-600 shrink-0 mt-0.5" />
+                <p className="text-sm text-green-800">
+                  Connected — {status.tools.length} tool{status.tools.length === 1 ? "" : "s"} available on your Zapier MCP server.
+                  {!allCovered && " Some platforms still need a posting tool (see below)."}
+                </p>
+              </div>
+              <div className="space-y-2">
+                {ZAPIER_PLATFORMS.map((p) => {
+                  const cfg = PLATFORM_CONFIG[p];
+                  const tool = status.coverage[p];
+                  return (
+                    <div key={p} className="flex items-center gap-3 rounded-lg border border-gray-100 px-3 py-2">
+                      <div className={`p-1.5 rounded-lg ${cfg.bgColor} border ${cfg.borderColor}`}>
+                        <PlatformIcon platform={p} className={`h-4 w-4 ${cfg.color}`} />
+                      </div>
+                      <span className="text-sm font-medium text-gray-900">{cfg.label}</span>
+                      {tool ? (
+                        <span className="ml-auto inline-flex items-center gap-1.5 text-xs text-green-700">
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          Ready <span className="text-gray-400 font-mono">({tool})</span>
+                        </span>
+                      ) : (
+                        <span className="ml-auto inline-flex items-center gap-1.5 text-xs text-red-600">
+                          <XCircle className="h-3.5 w-3.5" />
+                          No posting tool found — add one in Zapier
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
         </CardContent>
       </Card>
 
-      {/* Extension setup */}
-      <h2 className="text-base font-semibold text-gray-900 mb-4">Chrome Extension Setup</h2>
+      {/* Setup steps */}
+      <h2 className="text-base font-semibold text-gray-900 mb-4">Zapier Setup</h2>
       <div className="space-y-4 mb-8">
         {STEPS.map((step, i) => (
           <Card key={i}>
@@ -231,7 +290,7 @@ export default function SettingsPage() {
                     <div className="flex items-center gap-2 mb-0.5">
                       <span className="font-semibold text-gray-900 text-sm">{cfg.label}</span>
                       <Badge variant={note.mode === "auto" ? "success" : "secondary"}>
-                        {note.mode === "auto" ? "Auto" : "Clipboard"}
+                        {note.mode === "auto" ? "Auto" : "Manual"}
                       </Badge>
                     </div>
                     <p className="text-xs text-gray-500">{note.note}</p>
@@ -249,9 +308,10 @@ export default function SettingsPage() {
           <div className="flex gap-3">
             <Info className="h-4 w-4 text-blue-600 shrink-0 mt-0.5" />
             <p className="text-sm text-blue-700">
-              <strong>How it works:</strong> The extension opens each social platform in a background tab,
-              pastes your content into the post composer, and clicks Post — all using your existing logged-in
-              browser session. No developer API keys or app registrations required.
+              <strong>How it works:</strong> Every minute, a scheduler checks for due posts and sends them to your
+              Zapier MCP server, which publishes through each platform&apos;s official API. Page targeting (which
+              Facebook Page or LinkedIn company to post as) is configured on the Zapier side when you add each tool. No
+              browser extension, no fragile screen automation.
             </p>
           </div>
         </CardContent>

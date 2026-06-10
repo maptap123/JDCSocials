@@ -2,12 +2,12 @@ import { createClient } from "@/lib/supabase/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { PenSquare, Clock, CheckCircle, AlertCircle, TrendingUp, Pencil } from "lucide-react";
+import { PenSquare, Clock, CheckCircle, AlertCircle, TrendingUp, Pencil, Zap } from "lucide-react";
 import Link from "next/link";
 import { format } from "date-fns";
 import { PlatformIcon } from "@/components/platform-icon";
 import { PLATFORM_CONFIG } from "@/lib/platforms";
-import type { Platform, PostStatus, PostRow, ConnectedAccountRow } from "@/types/database";
+import type { Platform, PostStatus, PostRow } from "@/types/database";
 
 const statusConfig: Record<PostStatus, { label: string; variant: "default" | "secondary" | "success" | "destructive" | "warning" }> = {
   draft: { label: "Draft", variant: "secondary" },
@@ -27,13 +27,6 @@ export default async function DashboardPage() {
     .order("created_at", { ascending: false })
     .limit(10);
   const posts = (postsData ?? []) as PostRow[];
-
-  const { data: accountsData } = await supabase
-    .from("connected_accounts")
-    .select("platform, account_name, is_active")
-    .eq("user_id", user!.id)
-    .eq("is_active", true);
-  const accounts = (accountsData ?? []) as Pick<ConnectedAccountRow, "platform" | "account_name" | "is_active">[];
 
   const stats = {
     total: posts.length,
@@ -139,35 +132,29 @@ export default async function DashboardPage() {
         <div>
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Connected Accounts</CardTitle>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Zap className="h-4 w-4 text-orange-500" />
+                Publishing
+              </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              {accounts.length === 0 ? (
-                <div className="text-center py-6">
-                  <p className="text-sm text-gray-500 mb-3">No accounts connected</p>
-                  <Button size="sm" variant="outline" asChild>
-                    <Link href="/dashboard/settings">Connect accounts</Link>
-                  </Button>
+              <p className="text-sm text-gray-500">
+                Posts publish automatically through your Zapier connection.
+              </p>
+              {(["facebook", "instagram", "linkedin"] as Platform[]).map((p) => (
+                <div key={p} className="flex items-center gap-3">
+                  <div className={`p-2 rounded-lg ${PLATFORM_CONFIG[p].bgColor}`}>
+                    <PlatformIcon platform={p} className={`h-4 w-4 ${PLATFORM_CONFIG[p].color}`} />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-gray-900">{PLATFORM_CONFIG[p].label}</p>
+                    <p className="text-xs text-gray-500">via Zapier</p>
+                  </div>
                 </div>
-              ) : (
-                <>
-                  {accounts.map((acc) => (
-                    <div key={acc.platform} className="flex items-center gap-3">
-                      <div className={`p-2 rounded-lg ${PLATFORM_CONFIG[acc.platform as Platform].bgColor}`}>
-                        <PlatformIcon platform={acc.platform as Platform} className={`h-4 w-4 ${PLATFORM_CONFIG[acc.platform as Platform].color}`} />
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium text-gray-900">{acc.account_name}</p>
-                        <p className="text-xs text-gray-500 capitalize">{acc.platform}</p>
-                      </div>
-                      <div className="ml-auto h-2 w-2 rounded-full bg-green-500" />
-                    </div>
-                  ))}
-                  <Button size="sm" variant="outline" className="w-full mt-2" asChild>
-                    <Link href="/dashboard/settings">Manage accounts</Link>
-                  </Button>
-                </>
-              )}
+              ))}
+              <Button size="sm" variant="outline" className="w-full mt-2" asChild>
+                <Link href="/dashboard/settings">Check connection</Link>
+              </Button>
             </CardContent>
           </Card>
         </div>

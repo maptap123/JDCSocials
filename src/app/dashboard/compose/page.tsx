@@ -109,24 +109,52 @@ export default function ComposePage() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
-    const { error } = await supabase.from("posts").insert({
-      user_id: user.id,
-      content,
-      platforms: selectedPlatforms,
-      status,
-      scheduled_at: scheduledAt ? new Date(scheduledAt).toISOString() : null,
-      media_urls: uploadedFiles.map((f) => f.url),
-      platform_post_ids: {},
-      error_message: null,
-      published_at: status === "published" ? new Date().toISOString() : null,
-    });
+    const { data: inserted, error } = await supabase
+      .from("posts")
+      .insert({
+        user_id: user.id,
+        content,
+        platforms: selectedPlatforms,
+        // "Publish Now" saves as draft first, then publishes via Zapier below.
+        status: status === "published" ? "draft" : status,
+        scheduled_at: scheduledAt ? new Date(scheduledAt).toISOString() : null,
+        media_urls: uploadedFiles.map((f) => f.url),
+        platform_post_ids: {},
+        error_message: null,
+        published_at: null,
+      })
+      .select("id")
+      .single();
 
-    if (error) {
-      toast({ title: "Failed to save", description: error.message, variant: "destructive" });
-    } else {
-      toast({ title: status === "draft" ? "Draft saved" : status === "scheduled" ? "Post scheduled!" : "Post published!" });
-      router.push("/dashboard");
+    if (error || !inserted) {
+      toast({ title: "Failed to save", description: error?.message, variant: "destructive" });
+      setSaving(false);
+      return;
     }
+
+    if (status === "published") {
+      const res = await fetch("/api/posts/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ postId: inserted.id }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (res.ok && result.anySuccess) {
+        toast({
+          title: "Post published!",
+          description: result.errors?.length ? `Some platforms failed: ${result.errors.join("; ")}` : undefined,
+        });
+      } else {
+        toast({
+          title: "Publishing failed",
+          description: result.error ?? result.errors?.join("; ") ?? "Check the Zapier connection in Settings.",
+          variant: "destructive",
+        });
+      }
+    } else {
+      toast({ title: status === "draft" ? "Draft saved" : "Post scheduled!" });
+    }
+    router.push("/dashboard");
     setSaving(false);
   }
 

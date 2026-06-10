@@ -1,14 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
-import { postToFacebook } from "@/lib/platforms/facebook";
-import { postToInstagram } from "@/lib/platforms/instagram";
-import { postToLinkedIn } from "@/lib/platforms/linkedin";
-import type { PostRow, ConnectedAccountRow, Platform } from "@/types/database";
+import { publishPostNow } from "@/lib/publish";
+import { isZapierConfigured } from "@/lib/zapier";
+import type { PostRow } from "@/types/database";
+
+// Zapier actions can take several seconds each; allow time for a batch.
+export const maxDuration = 300;
 
 export async function GET(req: NextRequest) {
   const secret = req.headers.get("authorization")?.replace("Bearer ", "");
   if (secret !== process.env.CRON_SECRET) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  if (!isZapierConfigured()) {
+    // Leave due posts scheduled instead of failing them before Zapier is set up.
+    return NextResponse.json({ published: 0, warning: "ZAPIER_MCP_URL is not set — skipping publish run" });
   }
 
   const supabase = createServerClient(
@@ -30,59 +37,19 @@ export async function GET(req: NextRequest) {
   if (duePosts.length === 0) return NextResponse.json({ published: 0 });
 
   let published = 0;
+  let failed = 0;
+  let retried = 0;
+
   for (const post of duePosts) {
-    const platformPostIds: Record<string, string> = {};
-    const errors: string[] = [];
-
-    for (const platform of post.platforms as Platform[]) {
-      const { data: accData } = await supabase
-        .from("connected_accounts")
-        .select("*")
-        .eq("user_id", post.user_id)
-        .eq("platform", platform)
-        .eq("is_active", true)
-        .single();
-      const acc = accData as ConnectedAccountRow | null;
-
-      if (!acc) {
-        // No OAuth account — skip this platform, leave post scheduled for the browser extension
-        continue;
-      }
-
-      if (platform === "facebook") {
-        const result = await postToFacebook(acc.page_id ?? acc.account_id, acc.access_token, post.content, post.media_urls);
-        if (result.success) platformPostIds[platform] = result.id;
-        else errors.push(`Facebook: ${result.error}`);
-      } else if (platform === "instagram") {
-        const result = await postToInstagram(acc.account_id, acc.access_token, post.content, post.media_urls);
-        if (result.success) platformPostIds[platform] = result.id;
-        else errors.push(`Instagram: ${result.error}`);
-      } else if (platform === "linkedin") {
-        const orgUrn = acc.page_id ?? `urn:li:person:${acc.account_id}`;
-        const result = await postToLinkedIn(orgUrn, acc.access_token, post.content);
-        if (result.success) platformPostIds[platform] = result.id;
-        else errors.push(`LinkedIn: ${result.error}`);
-      }
+    try {
+      const outcome = await publishPostNow(supabase, post);
+      if (outcome.anySuccess) published++;
+      else failed++;
+    } catch {
+      // Zapier was unreachable — keep the post scheduled and retry next run.
+      retried++;
     }
-
-    const hasSuccess = Object.keys(platformPostIds).length > 0;
-
-    // Only update the post if we actually attempted API posting
-    if (hasSuccess || errors.length > 0) {
-      await supabase
-        .from("posts")
-        .update({
-          status: hasSuccess ? "published" : "failed",
-          published_at: hasSuccess ? new Date().toISOString() : null,
-          platform_post_ids: platformPostIds,
-          error_message: errors.length > 0 ? errors.join("; ") : null,
-        })
-        .eq("id", post.id);
-
-      if (hasSuccess) published++;
-    }
-    // If no accounts and no errors, leave the post scheduled for the browser extension
   }
 
-  return NextResponse.json({ published, total: duePosts.length });
+  return NextResponse.json({ published, failed, retrying: retried, total: duePosts.length });
 }
