@@ -107,7 +107,7 @@ interface ZapierStatus {
   configured: boolean;
   connected: boolean;
   error?: string;
-  tools: string[];
+  toolCount: number;
   coverage: Record<Exclude<Platform, "houzz">, string | null>;
 }
 
@@ -128,7 +128,7 @@ export default function SettingsPage() {
         configured: true,
         connected: false,
         error: err instanceof Error ? err.message : "Status check failed",
-        tools: [],
+        toolCount: 0,
         coverage: { facebook: null, instagram: null, linkedin: null },
       });
     }
@@ -214,7 +214,7 @@ export default function SettingsPage() {
               <div className="flex gap-3 rounded-lg border border-green-200 bg-green-50 p-3">
                 <CheckCircle2 className="h-4 w-4 text-green-600 shrink-0 mt-0.5" />
                 <p className="text-sm text-green-800">
-                  Connected — {status.tools.length} tool{status.tools.length === 1 ? "" : "s"} available on your Zapier MCP server.
+                  Connected — {status.toolCount} action{status.toolCount === 1 ? "" : "s"} available on your Zapier MCP server.
                   {!allCovered && " Some platforms still need a posting tool (see below)."}
                 </p>
               </div>

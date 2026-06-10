@@ -2,13 +2,23 @@ import { PLATFORM_CONFIG } from "@/lib/platforms";
 import type { Platform } from "@/types/database";
 
 // Minimal MCP client for the user's Zapier MCP server (Streamable HTTP).
-// Zapier exposes each configured action (e.g. "Facebook Pages: Create Page Post")
-// as an MCP tool; we discover tools at runtime so exact tool names/slugs in the
-// user's Zapier config don't matter.
+// Zapier servers expose actions in one of two shapes:
+//  - static: each action is its own tool (e.g. "facebook_pages_create_page_post")
+//  - dynamic: meta-tools ("list_enabled_zapier_actions" + "execute_zapier_write_action")
+// We discover at runtime and support both, so the Zapier-side config can change
+// without touching this app.
 
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 const CONNECT_TIMEOUT_MS = 15_000;
 const CALL_TIMEOUT_MS = 60_000;
+
+const DYNAMIC_LIST_TOOL = "list_enabled_zapier_actions";
+const DYNAMIC_EXECUTE_TOOL = "execute_zapier_write_action";
+
+export type ZapierPlatform = Exclude<Platform, "houzz">;
+export const ZAPIER_PLATFORMS: ZapierPlatform[] = ["facebook", "instagram", "linkedin"];
+
+export type MediaKind = "image" | "video" | null;
 
 export interface ZapierTool {
   name: string;
@@ -27,6 +37,12 @@ export interface PlatformPublishResult {
   error?: string;
 }
 
+export interface ZapierStatusInfo {
+  mode: "static" | "dynamic";
+  toolCount: number;
+  coverage: Record<ZapierPlatform, string | null>;
+}
+
 interface JsonRpcMessage {
   jsonrpc?: string;
   id?: number | string | null;
@@ -36,6 +52,13 @@ interface JsonRpcMessage {
 
 export function isZapierConfigured(): boolean {
   return Boolean(process.env.ZAPIER_MCP_URL);
+}
+
+const VIDEO_EXT = /\.(mp4|mov|m4v|webm|avi|wmv|flv|mkv|3gp|3g2|asf)(\?|#|$)/i;
+
+export function mediaKindOf(mediaUrls: string[]): MediaKind {
+  if (mediaUrls.length === 0) return null;
+  return VIDEO_EXT.test(mediaUrls[0]) ? "video" : "image";
 }
 
 function parseSse(text: string): JsonRpcMessage[] {
@@ -150,28 +173,45 @@ export class ZapierClient {
   }
 }
 
-const NON_PUBLISH_TOOL = /(find|search|get|list|retrieve|delete|remove|lookup)/;
+// ---------------------------------------------------------------------------
+// Tool/action matching
+// ---------------------------------------------------------------------------
+
+// Excludes read-only, analytics, and account-management actions (e.g.
+// "page_post_insights", "change_page_profile_photo") from publish candidates.
+const EXCLUDED_TOOL = /(find|search|get|list|retrieve|delete|remove|lookup|insight|metric|analytic|report|profile)/;
+
 const CONTENT_FIELD_PRIORITY = ["message", "caption", "commentary", "comment", "text", "content", "body", "status", "description"];
 const MEDIA_FIELD_PRIORITY = ["photo", "image", "picture", "media", "video", "file"];
 
-export function pickToolForPlatform(tools: ZapierTool[], platform: Platform, wantsMedia: boolean): ZapierTool | null {
+function scoreCandidate(haystack: string, platform: ZapierPlatform, kind: MediaKind): number {
+  let score = 0;
+  if (/(create|publish|post|share|add)/.test(haystack)) score += 2;
+
+  const isPhoto = /(photo|image|picture)/.test(haystack);
+  const isVideo = /(video|reel)/.test(haystack);
+  const isGenericMedia = /media/.test(haystack);
+  if (kind === null && (isPhoto || isVideo || isGenericMedia)) score -= 2;
+  if (kind === "image") score += isPhoto ? 3 : isGenericMedia ? 2 : isVideo ? -3 : 0;
+  if (kind === "video") score += isVideo ? 3 : isGenericMedia ? 2 : isPhoto ? -3 : 0;
+
+  if (platform === "facebook" && haystack.includes("page")) score += 1;
+  if (platform === "linkedin") {
+    // Prefer the company-page action over the personal-profile share.
+    if (/(company|organization)/.test(haystack)) score += 2;
+    else if (/(share|update)/.test(haystack)) score += 1;
+  }
+  return score;
+}
+
+export function pickToolForPlatform(tools: ZapierTool[], platform: ZapierPlatform, kind: MediaKind): ZapierTool | null {
   const candidates = tools.filter((t) => {
     const haystack = `${t.name} ${t.description ?? ""}`.toLowerCase();
-    return haystack.includes(platform) && !NON_PUBLISH_TOOL.test(t.name.toLowerCase());
+    return haystack.includes(platform) && !EXCLUDED_TOOL.test(t.name.toLowerCase());
   });
-
-  const score = (t: ZapierTool): number => {
-    const name = t.name.toLowerCase();
-    let s = 0;
-    if (/(create|publish|post|share|add)/.test(name)) s += 2;
-    const isMediaTool = /(photo|image|picture|media|video|reel)/.test(name);
-    if (isMediaTool) s += wantsMedia ? 3 : -2;
-    if (platform === "facebook" && name.includes("page")) s += 1;
-    if (platform === "linkedin" && /(company|organization|share|update)/.test(name)) s += 1;
-    return s;
-  };
-
-  candidates.sort((a, b) => score(b) - score(a));
+  candidates.sort(
+    (a, b) => scoreCandidate(b.name.toLowerCase(), platform, kind) - scoreCandidate(a.name.toLowerCase(), platform, kind)
+  );
   return candidates[0] ?? null;
 }
 
@@ -183,7 +223,7 @@ function matchKey(keys: string[], candidates: string[]): string | undefined {
   return undefined;
 }
 
-function buildInstructions(platform: Platform, content: string, mediaUrls: string[]): string {
+function buildInstructions(platform: ZapierPlatform, content: string, mediaUrls: string[]): string {
   const lines = [
     `Publish a new ${PLATFORM_CONFIG[platform].label} post with exactly this text (do not rewrite or shorten it):`,
     content,
@@ -194,7 +234,7 @@ function buildInstructions(platform: Platform, content: string, mediaUrls: strin
 
 export function buildToolArguments(
   tool: ZapierTool,
-  platform: Platform,
+  platform: ZapierPlatform,
   content: string,
   mediaUrls: string[]
 ): Record<string, unknown> {
@@ -218,15 +258,199 @@ export function buildToolArguments(
   return args;
 }
 
-const ID_KEYS = ["id", "post_id", "postid", "urn", "activity", "permalink_url", "permalink", "shortcode"];
+// ---------------------------------------------------------------------------
+// Dynamic mode (meta-tools): list_enabled_zapier_actions + execute_zapier_write_action
+// ---------------------------------------------------------------------------
 
-function extractPostId(text: string): string | null {
-  let parsed: unknown;
+interface DynamicApp {
+  app: string;
+  selectedApi: string;
+  actionCount: number;
+}
+
+interface DynamicAction {
+  key: string;
+  name: string;
+  toolName: string;
+  readOnly: boolean;
+}
+
+export interface DynamicTarget {
+  selectedApi: string;
+  actionKey: string;
+  label: string;
+  params: Array<{ key: string; isList: boolean }>;
+}
+
+function safeParse(text: string): unknown {
   try {
-    parsed = JSON.parse(text);
+    return JSON.parse(text);
   } catch {
     return null;
   }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function collectApps(parsed: unknown): DynamicApp[] {
+  const rec = asRecord(parsed);
+  const list = Array.isArray(rec?.apps) ? rec!.apps : Array.isArray(parsed) ? parsed : [];
+  const apps: DynamicApp[] = [];
+  for (const item of list) {
+    const r = asRecord(item);
+    if (r && typeof r.app === "string" && typeof r.selected_api === "string") {
+      apps.push({ app: r.app, selectedApi: r.selected_api, actionCount: typeof r.action_count === "number" ? r.action_count : 0 });
+    }
+  }
+  return apps;
+}
+
+function collectActions(parsed: unknown): DynamicAction[] {
+  const roots = Array.isArray(parsed) ? parsed : [parsed];
+  const actions: DynamicAction[] = [];
+  for (const root of roots) {
+    const r = asRecord(root);
+    const list = Array.isArray(r?.actions) ? r!.actions : [];
+    for (const item of list) {
+      const a = asRecord(item);
+      if (a && typeof a.key === "string") {
+        actions.push({
+          key: a.key,
+          name: typeof a.name === "string" ? a.name : "",
+          toolName: typeof a.tool_name === "string" ? a.tool_name : "",
+          readOnly: a.tool === "execute_zapier_read_action",
+        });
+      }
+    }
+  }
+  return actions;
+}
+
+// Finds the first "params"/"parameters" array of {key} objects anywhere in the
+// drill-down response, since the exact nesting isn't contractual.
+function collectParams(node: unknown, depth = 0): Array<{ key: string; isList: boolean }> {
+  if (!node || depth > 5) return [];
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const found = collectParams(item, depth + 1);
+      if (found.length > 0) return found;
+    }
+    return [];
+  }
+  const rec = asRecord(node);
+  if (!rec) return [];
+  for (const key of ["params", "parameters"]) {
+    const candidate = rec[key];
+    if (Array.isArray(candidate)) {
+      const params = candidate
+        .map((p) => asRecord(p))
+        .filter((p): p is Record<string, unknown> => Boolean(p && typeof p.key === "string"))
+        .map((p) => ({ key: p.key as string, isList: p.list === true }));
+      if (params.length > 0) return params;
+    }
+  }
+  for (const value of Object.values(rec)) {
+    const found = collectParams(value, depth + 1);
+    if (found.length > 0) return found;
+  }
+  return [];
+}
+
+// Caches the apps/actions lookups for the duration of one publish run.
+class DynamicCatalog {
+  private apps: DynamicApp[] | null = null;
+  private actionsByApi = new Map<string, DynamicAction[]>();
+
+  constructor(private client: ZapierClient) {}
+
+  async getApps(): Promise<DynamicApp[]> {
+    if (!this.apps) {
+      const res = await this.client.callTool(DYNAMIC_LIST_TOOL, {});
+      this.apps = collectApps(safeParse(res.text));
+    }
+    return this.apps;
+  }
+
+  async getActions(selectedApi: string): Promise<DynamicAction[]> {
+    let actions = this.actionsByApi.get(selectedApi);
+    if (!actions) {
+      const res = await this.client.callTool(DYNAMIC_LIST_TOOL, { selected_api: selectedApi });
+      actions = collectActions(safeParse(res.text));
+      this.actionsByApi.set(selectedApi, actions);
+    }
+    return actions;
+  }
+
+  async totalActionCount(): Promise<number> {
+    const apps = await this.getApps();
+    return apps.reduce((sum, app) => sum + app.actionCount, 0);
+  }
+
+  async findTarget(platform: ZapierPlatform, kind: MediaKind): Promise<DynamicTarget | null> {
+    const apps = await this.getApps();
+    const app = apps.find((a) => a.app.toLowerCase().includes(platform));
+    if (!app) return null;
+
+    const actions = await this.getActions(app.selectedApi);
+    const candidates = actions.filter(
+      (a) => !a.readOnly && !EXCLUDED_TOOL.test(`${a.key} ${a.toolName}`.toLowerCase())
+    );
+    const haystackOf = (a: DynamicAction) => `${a.key} ${a.name} ${a.toolName}`.toLowerCase();
+    candidates.sort((a, b) => scoreCandidate(haystackOf(b), platform, kind) - scoreCandidate(haystackOf(a), platform, kind));
+    const best = candidates[0];
+    if (!best) return null;
+
+    const drill = await this.client.callTool(DYNAMIC_LIST_TOOL, { selected_api: app.selectedApi, action: best.key });
+    return {
+      selectedApi: app.selectedApi,
+      actionKey: best.key,
+      label: best.toolName || best.name || best.key,
+      params: collectParams(safeParse(drill.text)),
+    };
+  }
+}
+
+async function executeDynamic(
+  client: ZapierClient,
+  target: DynamicTarget,
+  platform: ZapierPlatform,
+  content: string,
+  mediaUrls: string[]
+): Promise<{ ok: boolean; text: string }> {
+  const keys = target.params.map((p) => p.key);
+  const params: Record<string, unknown> = {};
+
+  const contentKey = matchKey(keys, CONTENT_FIELD_PRIORITY);
+  if (contentKey) params[contentKey] = content;
+
+  if (mediaUrls.length > 0) {
+    const mediaKey = matchKey(keys, MEDIA_FIELD_PRIORITY);
+    if (mediaKey) {
+      const isList = target.params.find((p) => p.key === mediaKey)?.isList ?? false;
+      params[mediaKey] = isList ? mediaUrls : mediaUrls[0];
+    }
+  }
+
+  return client.callTool(DYNAMIC_EXECUTE_TOOL, {
+    selected_api: target.selectedApi,
+    action: target.actionKey,
+    instructions: buildInstructions(platform, content, mediaUrls),
+    params,
+    output: "The id, permalink or url of the newly created post.",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Publishing
+// ---------------------------------------------------------------------------
+
+const ID_KEYS = ["id", "post_id", "postid", "urn", "activity", "permalink_url", "permalink", "shortcode"];
+
+function extractPostId(text: string): string | null {
+  const parsed = safeParse(text);
+  if (!parsed) return null;
   const found = new Map<string, string>();
   const walk = (node: unknown, depth: number): void => {
     if (!node || depth > 4) return;
@@ -268,6 +492,9 @@ export async function publishToPlatforms(
   const client = new ZapierClient();
   await client.connect();
   const tools = await client.listTools();
+  const hasDynamic = tools.some((t) => t.name === DYNAMIC_EXECUTE_TOOL);
+  const catalog = hasDynamic ? new DynamicCatalog(client) : null;
+  const kind = mediaKindOf(mediaUrls);
 
   for (const platform of platforms) {
     if (platform === "houzz") {
@@ -275,24 +502,29 @@ export async function publishToPlatforms(
       continue;
     }
     if (platform === "instagram" && mediaUrls.length === 0) {
-      results.push({ platform, success: false, error: "Instagram requires at least one image" });
-      continue;
-    }
-
-    const tool = pickToolForPlatform(tools, platform, mediaUrls.length > 0);
-    if (!tool) {
-      results.push({
-        platform,
-        success: false,
-        error: `No ${PLATFORM_CONFIG[platform].label} posting tool on your Zapier MCP server — add one at mcp.zapier.com`,
-      });
+      results.push({ platform, success: false, error: "Instagram requires at least one image or video" });
       continue;
     }
 
     try {
-      const args = buildToolArguments(tool, platform, content, mediaUrls);
-      const call = await client.callTool(tool.name, args);
-      if (call.ok) {
+      const staticTool = pickToolForPlatform(tools, platform, kind);
+      let call: { ok: boolean; text: string } | null = null;
+
+      if (staticTool) {
+        const args = buildToolArguments(staticTool, platform, content, mediaUrls);
+        call = await client.callTool(staticTool.name, args);
+      } else if (catalog) {
+        const target = await catalog.findTarget(platform, kind);
+        if (target) call = await executeDynamic(client, target, platform, content, mediaUrls);
+      }
+
+      if (!call) {
+        results.push({
+          platform,
+          success: false,
+          error: `No ${PLATFORM_CONFIG[platform].label} posting tool on your Zapier MCP server — add one at mcp.zapier.com`,
+        });
+      } else if (call.ok) {
         results.push({ platform, success: true, id: extractPostId(call.text) ?? "published" });
       } else {
         results.push({ platform, success: false, error: truncate(call.text || "Zapier returned an error", 300) });
@@ -307,4 +539,27 @@ export async function publishToPlatforms(
   }
 
   return results;
+}
+
+// Connection + per-platform coverage check for the Settings page.
+export async function getZapierStatus(): Promise<ZapierStatusInfo> {
+  const client = new ZapierClient();
+  await client.connect();
+  const tools = await client.listTools();
+  const hasDynamic = tools.some((t) => t.name === DYNAMIC_EXECUTE_TOOL);
+  const catalog = hasDynamic ? new DynamicCatalog(client) : null;
+
+  const coverage: Record<ZapierPlatform, string | null> = { facebook: null, instagram: null, linkedin: null };
+  for (const platform of ZAPIER_PLATFORMS) {
+    const kind: MediaKind = platform === "instagram" ? "image" : null;
+    const staticTool = pickToolForPlatform(tools, platform, kind);
+    if (staticTool) {
+      coverage[platform] = staticTool.name;
+    } else if (catalog) {
+      coverage[platform] = (await catalog.findTarget(platform, kind))?.label ?? null;
+    }
+  }
+
+  const toolCount = catalog ? await catalog.totalActionCount() : tools.length;
+  return { mode: catalog ? "dynamic" : "static", toolCount, coverage };
 }
