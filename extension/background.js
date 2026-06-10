@@ -157,10 +157,23 @@ function injectPoster(platform, content, mediaUrls) {
     }
   }
 
-  function findElement(selectors) {
+  function findElement(selectors, root) {
+    const ctx = root || document;
     for (const sel of selectors) {
-      const el = document.querySelector(sel);
+      try {
+        const el = ctx.querySelector(sel);
+        if (el) return el;
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  async function waitForElement(selectors, maxMs, root) {
+    const deadline = Date.now() + maxMs;
+    while (Date.now() < deadline) {
+      const el = findElement(selectors, root);
       if (el) return el;
+      await sleep(300);
     }
     return null;
   }
@@ -168,31 +181,39 @@ function injectPoster(platform, content, mediaUrls) {
   async function postFacebook() {
     const prompt = findElement([
       '[aria-label*="mind"]',
-      '[aria-label*="post"]',
-      'div[role="button"][tabindex="0"] span',
+      '[aria-label*="Write something"]',
+      '[placeholder*="mind"]',
+      'div[role="button"][tabindex="0"]',
       '.x1i10hfl[role="button"]',
     ]);
     if (!prompt) return { success: false, error: "Could not find Facebook post prompt" };
     prompt.click();
-    await sleep(1500);
 
-    const box = findElement([
+    // Wait for the composer dialog to open
+    const modal = await waitForElement(['[role="dialog"]', 'form[method="POST"]'], 5000);
+    const searchRoot = modal || document;
+
+    // Poll for the editor inside the dialog
+    const box = await waitForElement([
       'div[role="textbox"][contenteditable="true"]',
       'div[contenteditable="true"][data-lexical-editor="true"]',
       'div[contenteditable="true"]',
-    ]);
+    ], 5000, searchRoot);
     if (!box) return { success: false, error: "Could not find Facebook text box" };
-    pasteText(box, content);
-    await sleep(800);
 
-    const postBtn = findElement([
+    box.click();
+    await sleep(300);
+    pasteText(box, content);
+    await sleep(1000);
+
+    const postBtn = await waitForElement([
       '[aria-label="Post"]',
       'div[aria-label="Post"]',
       'span[aria-label="Post"]',
-    ]);
+    ], 4000, searchRoot);
     if (!postBtn) return { success: false, error: "Could not find Facebook Post button" };
     postBtn.click();
-    await sleep(1000);
+    await sleep(1500);
     return { success: true };
   }
 
@@ -224,36 +245,49 @@ function injectPoster(platform, content, mediaUrls) {
   }
 
   async function postLinkedIn() {
-    // On a company admin page, look for "Start a post" or "Create a post" button
-    const startPost = findElement([
+    const startPost = await waitForElement([
+      'button[aria-label="Start a post"]',
       '[aria-label="Start a post"]',
       '[aria-label="Create a post"]',
       ".share-box-feed-entry__trigger",
-      'button[aria-label*="post"]',
+      ".share-box-feed-entry__trigger-kicker",
       ".artdeco-button--muted",
-    ]);
+    ], 5000);
     if (!startPost) return { success: false, error: "Could not find LinkedIn start post button" };
     startPost.click();
-    await sleep(1500);
 
-    const editor = findElement([
-      ".ql-editor",
+    // Wait for the share modal
+    const modal = await waitForElement([
+      '.share-creation-state',
+      '[role="dialog"]',
+      '.share-box-v2',
+    ], 5000);
+    const searchRoot = modal || document;
+
+    // Poll for the editor inside the modal
+    const editor = await waitForElement([
+      '.ql-editor[contenteditable="true"]',
+      '.ql-editor',
       'div[role="textbox"][contenteditable="true"]',
-      'div[data-placeholder*="talk about"]',
-      ".share-creation-state__text-editor div[contenteditable]",
-    ]);
+      'div[contenteditable="true"][data-placeholder]',
+      'div[contenteditable="true"]',
+    ], 5000, searchRoot);
     if (!editor) return { success: false, error: "Could not find LinkedIn editor" };
-    pasteText(editor, content);
-    await sleep(800);
 
-    const postBtn = findElement([
+    editor.click();
+    await sleep(300);
+    pasteText(editor, content);
+    await sleep(1000);
+
+    const postBtn = await waitForElement([
       ".share-actions__primary-action",
       'button[aria-label="Post"]',
+      'button.share-actions__primary-action',
       ".artdeco-button--primary",
-    ]);
+    ], 4000, searchRoot);
     if (!postBtn) return { success: false, error: "Could not find LinkedIn Post button" };
     postBtn.click();
-    await sleep(1000);
+    await sleep(1500);
     return { success: true };
   }
 
