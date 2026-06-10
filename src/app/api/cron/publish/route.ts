@@ -45,7 +45,7 @@ export async function GET(req: NextRequest) {
       const acc = accData as ConnectedAccountRow | null;
 
       if (!acc) {
-        errors.push(`No connected ${platform} account`);
+        // No OAuth account — skip this platform, leave post scheduled for the browser extension
         continue;
       }
 
@@ -66,17 +66,22 @@ export async function GET(req: NextRequest) {
     }
 
     const hasSuccess = Object.keys(platformPostIds).length > 0;
-    await supabase
-      .from("posts")
-      .update({
-        status: errors.length > 0 && !hasSuccess ? "failed" : "published",
-        published_at: new Date().toISOString(),
-        platform_post_ids: platformPostIds,
-        error_message: errors.length > 0 ? errors.join("; ") : null,
-      })
-      .eq("id", post.id);
 
-    if (hasSuccess) published++;
+    // Only update the post if we actually attempted API posting
+    if (hasSuccess || errors.length > 0) {
+      await supabase
+        .from("posts")
+        .update({
+          status: hasSuccess ? "published" : "failed",
+          published_at: hasSuccess ? new Date().toISOString() : null,
+          platform_post_ids: platformPostIds,
+          error_message: errors.length > 0 ? errors.join("; ") : null,
+        })
+        .eq("id", post.id);
+
+      if (hasSuccess) published++;
+    }
+    // If no accounts and no errors, leave the post scheduled for the browser extension
   }
 
   return NextResponse.json({ published, total: duePosts.length });
