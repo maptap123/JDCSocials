@@ -94,9 +94,18 @@ function buildPlatformUrls(pageSettings) {
   };
 }
 
-async function postToPlatform(platform, content, mediaUrls, platformUrls) {
+async function getRecordedSelectors() {
+  const { recordedSelectors } = await chrome.storage.local.get("recordedSelectors");
+  return recordedSelectors || {};
+}
+
+// Recording state — persists across messages in the service worker
+let recordingState = null;
+
+async function postToPlatform(platform, content, mediaUrls, platformUrls, recordedSelectors) {
   return new Promise((resolve) => {
-    chrome.tabs.create({ url: platformUrls[platform], active: false }, (tab) => {
+    // Open as active so the platform renders its full UI
+    chrome.tabs.create({ url: platformUrls[platform], active: true }, (tab) => {
       const tabId = tab.id;
       let done = false;
 
@@ -117,7 +126,7 @@ async function postToPlatform(platform, content, mediaUrls, platformUrls) {
             const results = await chrome.scripting.executeScript({
               target: { tabId },
               func: injectPoster,
-              args: [platform, content, mediaUrls],
+              args: [platform, content, mediaUrls, recordedSelectors[platform] || {}],
             });
 
             clearTimeout(timeout);
@@ -142,7 +151,7 @@ async function postToPlatform(platform, content, mediaUrls, platformUrls) {
 
 // ── Injected function (runs inside the platform tab) ─────────────────────────
 
-function injectPoster(platform, content, mediaUrls) {
+function injectPoster(platform, content, mediaUrls, recorded) {
   function sleep(ms) {
     return new Promise((r) => setTimeout(r, ms));
   }
@@ -179,26 +188,20 @@ function injectPoster(platform, content, mediaUrls) {
   }
 
   async function postFacebook() {
-    // Try to find and click the "What's on your mind" composer trigger
-    const prompt = findElement([
-      '[aria-label*="mind"]',
-      '[aria-label*="Write something"]',
-      '[aria-label*="on your mind"]',
-      '[placeholder*="mind"]',
-      '[role="button"][tabindex="0"]',
-      '.x1i10hfl[role="button"]',
-    ]);
+    // Use recorded selectors if available, fall back to generic guesses
+    const triggerSels = recorded.composeTrigger
+      ? [recorded.composeTrigger, '[aria-label*="mind"]', '[aria-label*="Write something"]', '[role="button"][tabindex="0"]']
+      : ['[aria-label*="mind"]', '[aria-label*="Write something"]', '[aria-label*="on your mind"]', '[placeholder*="mind"]', '[role="button"][tabindex="0"]', '.x1i10hfl[role="button"]'];
+
+    const editorSels = recorded.textEditor
+      ? [recorded.textEditor, 'div[data-lexical-editor="true"]', 'div[contenteditable="true"]']
+      : ['div[data-lexical-editor="true"]', 'div[contenteditable="true"][data-lexical-editor]', 'div[role="textbox"][contenteditable="true"]', 'div[contenteditable="true"]'];
+
+    const prompt = await waitForElement(triggerSels, 6000);
     if (!prompt) return { success: false, error: "Could not find Facebook post prompt" };
     prompt.click();
 
-    // Wait up to 6s for a Lexical editor to appear anywhere on the page
-    // (don't restrict to modal — it may be inline on business pages)
-    const box = await waitForElement([
-      'div[data-lexical-editor="true"]',
-      'div[contenteditable="true"][data-lexical-editor]',
-      'div[role="textbox"][contenteditable="true"]',
-      'div[contenteditable="true"]',
-    ], 6000);
+    const box = await waitForElement(editorSels, 8000);
     if (!box) return { success: false, error: "Could not find Facebook text box" };
 
     box.click();
@@ -206,13 +209,11 @@ function injectPoster(platform, content, mediaUrls) {
     pasteText(box, content);
     await sleep(1200);
 
-    // Post button — search whole document in case it's outside the modal
-    const postBtn = await waitForElement([
-      '[aria-label="Post"]',
-      'div[aria-label="Post"]',
-      'span[aria-label="Post"]',
-      'div[role="button"][aria-label="Post"]',
-    ], 5000);
+    const postBtnSels = recorded.postButton
+      ? [recorded.postButton, '[aria-label="Post"]', 'div[aria-label="Post"]']
+      : ['[aria-label="Post"]', 'div[aria-label="Post"]', 'span[aria-label="Post"]', 'div[role="button"][aria-label="Post"]'];
+
+    const postBtn = await waitForElement(postBtnSels, 5000);
     if (!postBtn) return { success: false, error: "Could not find Facebook Post button" };
     postBtn.click();
     await sleep(2000);
@@ -247,26 +248,19 @@ function injectPoster(platform, content, mediaUrls) {
   }
 
   async function postLinkedIn() {
-    const startPost = await waitForElement([
-      'button[aria-label="Start a post"]',
-      '[aria-label="Start a post"]',
-      '[aria-label="Create a post"]',
-      ".share-box-feed-entry__trigger",
-      ".share-box-feed-entry__trigger-kicker",
-      "button.share-creation-state__placeholder",
-      ".artdeco-button--muted",
-    ], 6000);
+    const triggerSels = recorded.composeTrigger
+      ? [recorded.composeTrigger, 'button[aria-label="Start a post"]', '[aria-label="Start a post"]', '.share-box-feed-entry__trigger']
+      : ['button[aria-label="Start a post"]', '[aria-label="Start a post"]', '[aria-label="Create a post"]', '.share-box-feed-entry__trigger', '.share-box-feed-entry__trigger-kicker', 'button.share-creation-state__placeholder', '.artdeco-button--muted'];
+
+    const editorSels = recorded.textEditor
+      ? [recorded.textEditor, '.ql-editor[contenteditable="true"]', 'div[contenteditable="true"]']
+      : ['.ql-editor[contenteditable="true"]', '.ql-editor', 'div[role="textbox"][contenteditable="true"]', 'div[contenteditable="true"][data-placeholder]', 'div[contenteditable="true"]'];
+
+    const startPost = await waitForElement(triggerSels, 6000);
     if (!startPost) return { success: false, error: "Could not find LinkedIn start post button" };
     startPost.click();
 
-    // Poll for editor anywhere on the page — don't restrict to modal root
-    const editor = await waitForElement([
-      '.ql-editor[contenteditable="true"]',
-      '.ql-editor',
-      'div[role="textbox"][contenteditable="true"]',
-      'div[contenteditable="true"][data-placeholder]',
-      'div[contenteditable="true"]',
-    ], 6000);
+    const editor = await waitForElement(editorSels, 8000);
     if (!editor) return { success: false, error: "Could not find LinkedIn editor" };
 
     editor.click();
@@ -274,13 +268,11 @@ function injectPoster(platform, content, mediaUrls) {
     pasteText(editor, content);
     await sleep(1200);
 
-    const postBtn = await waitForElement([
-      ".share-actions__primary-action",
-      'button[aria-label="Post"]',
-      'button.share-actions__primary-action',
-      ".artdeco-button--primary[aria-label='Post']",
-      ".artdeco-button--primary",
-    ], 5000);
+    const postBtnSels = recorded.postButton
+      ? [recorded.postButton, 'button[aria-label="Post"]', '.share-actions__primary-action']
+      : ['.share-actions__primary-action', 'button[aria-label="Post"]', 'button.share-actions__primary-action', ".artdeco-button--primary[aria-label='Post']", '.artdeco-button--primary'];
+
+    const postBtn = await waitForElement(postBtnSels, 5000);
     if (!postBtn) return { success: false, error: "Could not find LinkedIn Post button" };
     postBtn.click();
     await sleep(2000);
@@ -338,6 +330,7 @@ async function processScheduledPosts() {
 
   const pageSettings = await getPageUrls();
   const platformUrls = buildPlatformUrls(pageSettings);
+  const recordedSelectors = await getRecordedSelectors();
 
   chrome.action.setBadgeText({ text: String(posts.length) });
   chrome.action.setBadgeBackgroundColor({ color: "#6366f1" });
@@ -349,7 +342,7 @@ async function processScheduledPosts() {
     const errors = [];
 
     for (const platform of post.platforms) {
-      const result = await postToPlatform(platform, post.content, post.media_urls, platformUrls);
+      const result = await postToPlatform(platform, post.content, post.media_urls, platformUrls, recordedSelectors);
       if (result.success) {
         platformPostIds[platform] = "browser-posted";
       } else if (result.manual) {
@@ -404,6 +397,43 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "GET_STATUS") {
     getStatus().then(sendResponse);
     return true;
+  }
+
+  // ── Recorder messages ──────────────────────────────────────────────────────
+  if (msg.type === "START_RECORDING") {
+    const platform = msg.platform;
+    const urls = { facebook: "https://www.facebook.com/", linkedin: "https://www.linkedin.com/feed/" };
+    recordingState = { platform, selectors: {} };
+    chrome.tabs.create({ url: urls[platform] || "https://www.facebook.com/", active: true }, async (tab) => {
+      // Wait for page to load then inject recorder
+      function onUpdated(tabId, changeInfo) {
+        if (tabId !== tab.id || changeInfo.status !== "complete") return;
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+        chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["recorder.js"] });
+      }
+      chrome.tabs.onUpdated.addListener(onUpdated);
+    });
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (msg.type === "RECORDER_STEP") {
+    if (recordingState && recordingState.platform === msg.platform) {
+      recordingState.selectors[msg.key] = msg.selector;
+    }
+    sendResponse({ ok: true });
+  }
+
+  if (msg.type === "RECORDER_DONE" || msg.type === "RECORDER_CANCELLED") {
+    if (recordingState && msg.type === "RECORDER_DONE") {
+      chrome.storage.local.get("recordedSelectors", ({ recordedSelectors }) => {
+        const existing = recordedSelectors || {};
+        existing[recordingState.platform] = recordingState.selectors;
+        chrome.storage.local.set({ recordedSelectors: existing });
+      });
+    }
+    recordingState = null;
+    sendResponse({ ok: true });
   }
 });
 
