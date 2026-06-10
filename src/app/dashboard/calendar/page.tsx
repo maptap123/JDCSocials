@@ -18,7 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { PlatformIcon } from "@/components/platform-icon";
 import { PLATFORM_CONFIG } from "@/lib/platforms";
-import { ChevronLeft, ChevronRight, PenSquare } from "lucide-react";
+import { ChevronLeft, ChevronRight, PenSquare, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
 import type { Platform, PostStatus } from "@/types/database";
@@ -193,11 +193,18 @@ export default function CalendarPage() {
                           <Badge variant={post.status === "published" ? "success" : post.status === "failed" ? "destructive" : post.status === "scheduled" ? "warning" : "secondary"}>
                             {post.status}
                           </Badge>
-                          {(post.scheduled_at ?? post.published_at) && (
-                            <span className="text-xs text-gray-400">
-                              {format(new Date((post.scheduled_at ?? post.published_at)!), "h:mm a")}
-                            </span>
-                          )}
+                          <div className="flex items-center gap-1">
+                            {(post.scheduled_at ?? post.published_at) && (
+                              <span className="text-xs text-gray-400">
+                                {format(new Date((post.scheduled_at ?? post.published_at)!), "h:mm a")}
+                              </span>
+                            )}
+                            <Button variant="ghost" size="icon" className="h-6 w-6" asChild>
+                              <Link href={`/dashboard/compose/${post.id}`}>
+                                <Pencil className="h-3 w-3" />
+                              </Link>
+                            </Button>
+                          </div>
                         </div>
                         <p className="text-sm text-gray-700 line-clamp-3">{post.content}</p>
                         <div className="flex gap-1 mt-2">

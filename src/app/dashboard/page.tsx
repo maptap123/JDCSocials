@@ -2,7 +2,7 @@ import { createClient } from "@/lib/supabase/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { PenSquare, Clock, CheckCircle, AlertCircle, TrendingUp } from "lucide-react";
+import { PenSquare, Clock, CheckCircle, AlertCircle, TrendingUp, Pencil } from "lucide-react";
 import Link from "next/link";
 import { format } from "date-fns";
 import { PlatformIcon } from "@/components/platform-icon";
@@ -118,7 +118,14 @@ export default async function DashboardPage() {
                               )}
                             </div>
                           </div>
-                          <Badge variant={status.variant}>{status.label}</Badge>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <Badge variant={status.variant}>{status.label}</Badge>
+                            <Button variant="ghost" size="icon" className="h-7 w-7" asChild>
+                              <Link href={`/dashboard/compose/${post.id}`}>
+                                <Pencil className="h-3.5 w-3.5" />
+                              </Link>
+                            </Button>
+                          </div>
                         </div>
                       </div>
                     );
