@@ -179,41 +179,43 @@ function injectPoster(platform, content, mediaUrls) {
   }
 
   async function postFacebook() {
+    // Try to find and click the "What's on your mind" composer trigger
     const prompt = findElement([
       '[aria-label*="mind"]',
       '[aria-label*="Write something"]',
+      '[aria-label*="on your mind"]',
       '[placeholder*="mind"]',
-      'div[role="button"][tabindex="0"]',
+      '[role="button"][tabindex="0"]',
       '.x1i10hfl[role="button"]',
     ]);
     if (!prompt) return { success: false, error: "Could not find Facebook post prompt" };
     prompt.click();
 
-    // Wait for the composer dialog to open
-    const modal = await waitForElement(['[role="dialog"]', 'form[method="POST"]'], 5000);
-    const searchRoot = modal || document;
-
-    // Poll for the editor inside the dialog
+    // Wait up to 6s for a Lexical editor to appear anywhere on the page
+    // (don't restrict to modal — it may be inline on business pages)
     const box = await waitForElement([
+      'div[data-lexical-editor="true"]',
+      'div[contenteditable="true"][data-lexical-editor]',
       'div[role="textbox"][contenteditable="true"]',
-      'div[contenteditable="true"][data-lexical-editor="true"]',
       'div[contenteditable="true"]',
-    ], 5000, searchRoot);
+    ], 6000);
     if (!box) return { success: false, error: "Could not find Facebook text box" };
 
     box.click();
-    await sleep(300);
+    await sleep(400);
     pasteText(box, content);
-    await sleep(1000);
+    await sleep(1200);
 
+    // Post button — search whole document in case it's outside the modal
     const postBtn = await waitForElement([
       '[aria-label="Post"]',
       'div[aria-label="Post"]',
       'span[aria-label="Post"]',
-    ], 4000, searchRoot);
+      'div[role="button"][aria-label="Post"]',
+    ], 5000);
     if (!postBtn) return { success: false, error: "Could not find Facebook Post button" };
     postBtn.click();
-    await sleep(1500);
+    await sleep(2000);
     return { success: true };
   }
 
@@ -251,43 +253,37 @@ function injectPoster(platform, content, mediaUrls) {
       '[aria-label="Create a post"]',
       ".share-box-feed-entry__trigger",
       ".share-box-feed-entry__trigger-kicker",
+      "button.share-creation-state__placeholder",
       ".artdeco-button--muted",
-    ], 5000);
+    ], 6000);
     if (!startPost) return { success: false, error: "Could not find LinkedIn start post button" };
     startPost.click();
 
-    // Wait for the share modal
-    const modal = await waitForElement([
-      '.share-creation-state',
-      '[role="dialog"]',
-      '.share-box-v2',
-    ], 5000);
-    const searchRoot = modal || document;
-
-    // Poll for the editor inside the modal
+    // Poll for editor anywhere on the page — don't restrict to modal root
     const editor = await waitForElement([
       '.ql-editor[contenteditable="true"]',
       '.ql-editor',
       'div[role="textbox"][contenteditable="true"]',
       'div[contenteditable="true"][data-placeholder]',
       'div[contenteditable="true"]',
-    ], 5000, searchRoot);
+    ], 6000);
     if (!editor) return { success: false, error: "Could not find LinkedIn editor" };
 
     editor.click();
-    await sleep(300);
+    await sleep(400);
     pasteText(editor, content);
-    await sleep(1000);
+    await sleep(1200);
 
     const postBtn = await waitForElement([
       ".share-actions__primary-action",
       'button[aria-label="Post"]',
       'button.share-actions__primary-action',
+      ".artdeco-button--primary[aria-label='Post']",
       ".artdeco-button--primary",
-    ], 4000, searchRoot);
+    ], 5000);
     if (!postBtn) return { success: false, error: "Could not find LinkedIn Post button" };
     postBtn.click();
-    await sleep(1500);
+    await sleep(2000);
     return { success: true };
   }
 
