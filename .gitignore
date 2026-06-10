@@ -6,3 +6,6 @@ out/
 *.tsbuildinfo
 
 .vercel
+
+# Playwright MCP browser session artifacts (may contain page secrets)
+.playwright-mcp/
