@@ -5,6 +5,8 @@ import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { PlatformIcon } from "@/components/platform-icon";
 import { PLATFORM_CONFIG } from "@/lib/platforms";
 import { CheckCircle2, Download, LogIn, Globe, Info } from "lucide-react";
@@ -69,11 +71,27 @@ const STEPS = [
 
 export default function SettingsPage() {
   const [user, setUser] = useState<{ email?: string } | null>(null);
+  const [facebookPageUrl, setFacebookPageUrl] = useState("");
+  const [linkedinCompanyUrl, setLinkedinCompanyUrl] = useState("");
+  const [savingPages, setSavingPages] = useState(false);
   const supabase = createClient();
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
-      if (data.user) setUser({ email: data.user.email ?? undefined });
+      if (data.user) {
+        setUser({ email: data.user.email ?? undefined });
+        supabase
+          .from("social_settings")
+          .select("facebook_page_url, linkedin_company_url")
+          .eq("user_id", data.user.id)
+          .maybeSingle()
+          .then(({ data: settings }) => {
+            if (settings) {
+              setFacebookPageUrl(settings.facebook_page_url ?? "");
+              setLinkedinCompanyUrl(settings.linkedin_company_url ?? "");
+            }
+          });
+      }
     });
   }, [supabase]);
 
@@ -81,6 +99,23 @@ export default function SettingsPage() {
     await supabase.auth.signOut();
     toast({ title: "Signed out" });
     window.location.href = "/login";
+  }
+
+  async function handleSavePages() {
+    setSavingPages(true);
+    const { data: { user: u } } = await supabase.auth.getUser();
+    if (!u) return;
+    const { error } = await supabase.from("social_settings").upsert({
+      user_id: u.id,
+      facebook_page_url: facebookPageUrl.trim() || null,
+      linkedin_company_url: linkedinCompanyUrl.trim() || null,
+    });
+    setSavingPages(false);
+    if (error) {
+      toast({ title: "Failed to save", description: error.message, variant: "destructive" });
+    } else {
+      toast({ title: "Page URLs saved" });
+    }
   }
 
   return (
@@ -102,6 +137,54 @@ export default function SettingsPage() {
           </div>
           <Button variant="outline" size="sm" onClick={handleSignOut}>
             Sign out
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Target pages */}
+      <h2 className="text-base font-semibold text-gray-900 mb-4">Target Pages</h2>
+      <Card className="mb-8">
+        <CardHeader>
+          <CardDescription>
+            Tell the extension which business page to post to instead of your personal profile.
+            Paste the full URL of your Facebook Page or LinkedIn Company page below.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <div className="space-y-1.5">
+            <Label htmlFor="fb-page" className="flex items-center gap-2">
+              <PlatformIcon platform="facebook" className="h-4 w-4 text-blue-600" />
+              Facebook Page URL
+            </Label>
+            <Input
+              id="fb-page"
+              placeholder="https://www.facebook.com/YourBusinessPage"
+              value={facebookPageUrl}
+              onChange={(e) => setFacebookPageUrl(e.target.value)}
+            />
+            <p className="text-xs text-gray-500">
+              The extension will open this page and post from the page composer — not your personal feed.
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="li-company" className="flex items-center gap-2">
+              <PlatformIcon platform="linkedin" className="h-4 w-4 text-blue-700" />
+              LinkedIn Company Page URL
+            </Label>
+            <Input
+              id="li-company"
+              placeholder="https://www.linkedin.com/company/your-company"
+              value={linkedinCompanyUrl}
+              onChange={(e) => setLinkedinCompanyUrl(e.target.value)}
+            />
+            <p className="text-xs text-gray-500">
+              The extension will open your company page admin view and post as the company.
+            </p>
+          </div>
+
+          <Button onClick={handleSavePages} disabled={savingPages} size="sm">
+            {savingPages ? "Saving…" : "Save Page URLs"}
           </Button>
         </CardContent>
       </Card>

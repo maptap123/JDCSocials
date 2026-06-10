@@ -7,7 +7,6 @@ const SUPABASE_ANON_KEY =
 async function getAccessToken() {
   const { session } = await chrome.storage.local.get("session");
   if (!session) return null;
-  // Refresh if within 5 minutes of expiry
   if (session.expires_at && Date.now() / 1000 > session.expires_at - 300) {
     return await refreshSession(session.refresh_token);
   }
@@ -59,18 +58,45 @@ async function updatePost(id, updates) {
   });
 }
 
+// Fetch page URLs saved in Settings — falls back to personal feed if not set
+async function getPageUrls() {
+  try {
+    const res = await supabaseFetch(
+      `/rest/v1/social_settings?select=facebook_page_url,linkedin_company_url&limit=1`,
+      { headers: { Prefer: "return=representation" } }
+    );
+    if (!res.ok) return {};
+    const rows = await res.json();
+    return rows[0] ?? {};
+  } catch {
+    return {};
+  }
+}
+
 // ── Platform tab posting ─────────────────────────────────────────────────────
 
-const PLATFORM_URLS = {
+const DEFAULT_URLS = {
   facebook: "https://www.facebook.com/",
   instagram: "https://www.instagram.com/",
   linkedin: "https://www.linkedin.com/feed/",
   houzz: "https://www.houzz.com/",
 };
 
-async function postToPlatform(platform, content, mediaUrls) {
+function buildPlatformUrls(pageSettings) {
+  return {
+    facebook: pageSettings.facebook_page_url || DEFAULT_URLS.facebook,
+    instagram: DEFAULT_URLS.instagram,
+    // LinkedIn company admin post page
+    linkedin: pageSettings.linkedin_company_url
+      ? `${pageSettings.linkedin_company_url.replace(/\/$/, "")}/admin/`
+      : DEFAULT_URLS.linkedin,
+    houzz: DEFAULT_URLS.houzz,
+  };
+}
+
+async function postToPlatform(platform, content, mediaUrls, platformUrls) {
   return new Promise((resolve) => {
-    chrome.tabs.create({ url: PLATFORM_URLS[platform], active: false }, (tab) => {
+    chrome.tabs.create({ url: platformUrls[platform], active: false }, (tab) => {
       const tabId = tab.id;
       let done = false;
 
@@ -98,7 +124,6 @@ async function postToPlatform(platform, content, mediaUrls) {
             done = true;
             const result = results?.[0]?.result ?? { success: false, error: "No result" };
 
-            // Leave tab open for a moment so user can see it, then close
             setTimeout(() => chrome.tabs.remove(tabId).catch(() => {}), 3000);
             resolve(result);
           } catch (err) {
@@ -107,7 +132,7 @@ async function postToPlatform(platform, content, mediaUrls) {
             chrome.tabs.remove(tabId).catch(() => {});
             resolve({ success: false, error: err.message });
           }
-        }, 2500); // wait for JS frameworks to hydrate
+        }, 2500);
       }
 
       chrome.tabs.onUpdated.addListener(onUpdated);
@@ -116,7 +141,6 @@ async function postToPlatform(platform, content, mediaUrls) {
 }
 
 // ── Injected function (runs inside the platform tab) ─────────────────────────
-// This function is serialised and sent to the page — no closure access.
 
 function injectPoster(platform, content, mediaUrls) {
   function sleep(ms) {
@@ -125,11 +149,9 @@ function injectPoster(platform, content, mediaUrls) {
 
   function pasteText(el, text) {
     el.focus();
-    // Try clipboard event first (works in React apps)
     const dt = new DataTransfer();
     dt.setData("text/plain", text);
     el.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dt }));
-    // Fallback: execCommand
     if (!el.textContent && !el.value) {
       document.execCommand("insertText", false, text);
     }
@@ -144,7 +166,6 @@ function injectPoster(platform, content, mediaUrls) {
   }
 
   async function postFacebook() {
-    // Click the "What's on your mind" prompt
     const prompt = findElement([
       '[aria-label*="mind"]',
       '[aria-label*="post"]',
@@ -176,7 +197,6 @@ function injectPoster(platform, content, mediaUrls) {
   }
 
   async function postInstagram() {
-    // Instagram requires images for feed posts — copy to clipboard and guide user
     const newPostBtn = findElement([
       'svg[aria-label="New post"]',
       '[aria-label="New post"]',
@@ -184,12 +204,10 @@ function injectPoster(platform, content, mediaUrls) {
     ]);
 
     if (mediaUrls && mediaUrls.length > 0) {
-      // Try to open new post dialog
       if (newPostBtn) {
         newPostBtn.closest("a, button, div[role='button']")?.click();
         await sleep(1500);
       }
-      // Copy caption to clipboard for user to paste
       await navigator.clipboard.writeText(content).catch(() => {});
       return {
         success: false,
@@ -206,8 +224,10 @@ function injectPoster(platform, content, mediaUrls) {
   }
 
   async function postLinkedIn() {
+    // On a company admin page, look for "Start a post" or "Create a post" button
     const startPost = findElement([
       '[aria-label="Start a post"]',
+      '[aria-label="Create a post"]',
       ".share-box-feed-entry__trigger",
       'button[aria-label*="post"]',
       ".artdeco-button--muted",
@@ -238,7 +258,6 @@ function injectPoster(platform, content, mediaUrls) {
   }
 
   async function postHouzz() {
-    // Houzz community post — navigate to discussion board
     const newPost = findElement([
       'a[href*="/discussions/new"]',
       '[aria-label*="post"]',
@@ -258,7 +277,6 @@ function injectPoster(platform, content, mediaUrls) {
         }
       }
     }
-    // Fallback: copy to clipboard
     await navigator.clipboard.writeText(content).catch(() => {});
     return {
       success: false,
@@ -277,7 +295,7 @@ function injectPoster(platform, content, mediaUrls) {
 
 async function processScheduledPosts() {
   const token = await getAccessToken();
-  if (!token) return; // Not logged in — silently skip
+  if (!token) return;
 
   let posts;
   try {
@@ -288,19 +306,20 @@ async function processScheduledPosts() {
 
   if (!posts || posts.length === 0) return;
 
-  // Update badge
+  const pageSettings = await getPageUrls();
+  const platformUrls = buildPlatformUrls(pageSettings);
+
   chrome.action.setBadgeText({ text: String(posts.length) });
   chrome.action.setBadgeBackgroundColor({ color: "#6366f1" });
 
   for (const post of posts) {
-    // Mark as processing immediately to avoid double-publishing
     await updatePost(post.id, { status: "published", published_at: new Date().toISOString() });
 
     const platformPostIds = {};
     const errors = [];
 
     for (const platform of post.platforms) {
-      const result = await postToPlatform(platform, post.content, post.media_urls);
+      const result = await postToPlatform(platform, post.content, post.media_urls, platformUrls);
       if (result.success) {
         platformPostIds[platform] = "browser-posted";
       } else if (result.manual) {
@@ -336,11 +355,9 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "checkPosts") processScheduledPosts();
 });
 
-// Also check on install/startup
 chrome.runtime.onInstalled.addListener(() => processScheduledPosts());
 chrome.runtime.onStartup.addListener(() => processScheduledPosts());
 
-// Listen for messages from popup
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "CHECK_NOW") {
     processScheduledPosts().then(() => sendResponse({ ok: true }));
